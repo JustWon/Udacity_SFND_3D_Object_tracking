@@ -22,6 +22,9 @@
 
 using namespace std;
 
+string detectorType = "SHITOMASI"; // SHITOMASI, HARRIS, FAST, BRISK, ORB, AKAZE, SIFT
+string descriptorType = "BRISK"; // BRISK, BRIEF, ORB, FREAK, AKAZE, SIFT
+
 /* MAIN PROGRAM */
 int main(int argc, const char *argv[])
 {
@@ -132,15 +135,12 @@ int main(int argc, const char *argv[])
         bVis = true;
         if(bVis)
         {
-            show3DObjects((dataBuffer.end()-1)->boundingBoxes, cv::Size(4.0, 20.0), cv::Size(2000, 2000), true);
+            show3DObjects((dataBuffer.end()-1)->boundingBoxes, cv::Size(4.0, 20.0), cv::Size(1000, 1000), true);
         }
         bVis = false;
 
         cout << "#4 : CLUSTER LIDAR POINT CLOUD done" << endl;
         
-        
-        // REMOVE THIS LINE BEFORE PROCEEDING WITH THE FINAL PROJECT
-        continue; // skips directly to the next image without processing what comes beneath
 
         /* DETECT IMAGE KEYPOINTS */
 
@@ -150,15 +150,38 @@ int main(int argc, const char *argv[])
 
         // extract 2D keypoints from current image
         vector<cv::KeyPoint> keypoints; // create empty feature list for current image
-        string detectorType = "SHITOMASI";
 
         if (detectorType.compare("SHITOMASI") == 0)
         {
             detKeypointsShiTomasi(keypoints, imgGray, false);
         }
-        else
+        else if (detectorType.compare("HARRIS") == 0)
         {
-            //...
+            detKeypointsHarris(keypoints, imgGray, false);
+        }
+        else if (detectorType.compare("FAST") == 0)
+        {
+            detKeypointsFast(keypoints, imgGray, false);
+        }
+        else if (detectorType.compare("BRISK") == 0)
+        {
+            detKeypointsBrisk(keypoints, imgGray, false);
+        }
+        else if (detectorType.compare("ORB") == 0)
+        {
+            detKeypointsORB(keypoints, imgGray, false);
+        }
+        else if (detectorType.compare("AKAZE") == 0)
+        {
+            detKeypointsAKAZE(keypoints, imgGray, false);
+        }
+        else if (detectorType.compare("SIFT") == 0)
+        {
+            detKeypointsSIFT(keypoints, imgGray, false);
+        }
+        else 
+        {
+            printf("No such keypoint detector.");
         }
 
         // optional : limit number of keypoints (helpful for debugging and learning)
@@ -184,7 +207,6 @@ int main(int argc, const char *argv[])
         /* EXTRACT KEYPOINT DESCRIPTORS */
 
         cv::Mat descriptors;
-        string descriptorType = "BRISK"; // BRISK, BRIEF, ORB, FREAK, AKAZE, SIFT
         descKeypoints((dataBuffer.end() - 1)->keypoints, (dataBuffer.end() - 1)->cameraImg, descriptors, descriptorType);
 
         // push descriptors for current frame to end of data buffer

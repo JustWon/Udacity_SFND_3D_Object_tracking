@@ -5,6 +5,8 @@
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 
+#include <pcl/segmentation/extract_clusters.h>
+
 #include "camFusion.hpp"
 #include "dataStructures.h"
 
@@ -129,30 +131,180 @@ void show3DObjects(std::vector<BoundingBox> &boundingBoxes, cv::Size worldSize, 
     }
 }
 
-
 // associate a given bounding box with the keypoints it contains
 void clusterKptMatchesWithROI(BoundingBox &boundingBox, std::vector<cv::KeyPoint> &kptsPrev, std::vector<cv::KeyPoint> &kptsCurr, std::vector<cv::DMatch> &kptMatches)
 {
-    // ...
-}
+    vector<double> vec_distance;
+    for (const auto & kptmatch : kptMatches) 
+    {
+        if (boundingBox.roi.contains(kptsCurr[kptmatch.trainIdx].pt))
+        {
+            vec_distance.push_back(cv::norm(kptsPrev[kptmatch.queryIdx].pt - kptsCurr[kptmatch.trainIdx].pt));
+        }
+    }
 
+    double mean_distance = std::accumulate(vec_distance.begin(),vec_distance.end(),0.0) / vec_distance.size();
+
+    int i = 0;
+    for(auto dist : vec_distance){
+        if(dist < 1.5*mean_distance){
+            boundingBox.kptMatches.push_back(kptMatches[i]);
+            boundingBox.keypoints.push_back(kptsCurr[kptMatches[i].trainIdx]);
+        }
+        i++;
+    }
+}
 
 // Compute time-to-collision (TTC) based on keypoint correspondences in successive images
 void computeTTCCamera(std::vector<cv::KeyPoint> &kptsPrev, std::vector<cv::KeyPoint> &kptsCurr, 
                       std::vector<cv::DMatch> kptMatches, double frameRate, double &TTC, cv::Mat *visImg)
 {
-    // ...
+    std::vector<double> distRatios;
+    for (auto it1 = kptMatches.begin(); it1 != kptMatches.end() - 1; ++it1)
+    {
+        cv::KeyPoint kp11 = kptsPrev[it1->queryIdx];
+        cv::KeyPoint kp12 = kptsCurr[it1->trainIdx];
+
+        for (auto it2 = kptMatches.begin() + 1; it2 != kptMatches.end(); ++it2)
+        {
+            double minDist = 100.0;
+
+            cv::KeyPoint kp21 = kptsPrev[it2->queryIdx];
+            cv::KeyPoint kp22 = kptsCurr[it2->trainIdx];
+
+            double dist1 = cv::norm(kp11.pt-kp21.pt);
+            double dist2 = cv::norm(kp12.pt-kp22.pt);
+
+            if (dist1 > std::numeric_limits<double>::epsilon() && dist2 >= minDist)
+            {
+                double ratio = dist2/dist1;
+                distRatios.push_back(ratio);
+            }
+        }
+    }
+
+    if (distRatios.size() == 0)
+    {
+        TTC = 0;
+        return ;
+    }
+
+    // double meanDistRatio = std::accumulate(distRatios.begin(), distRatios.end(), 0.0) / distRatios.size(); 
+    double dT = 1/frameRate;
+    // TTC =  -dT/(1-meanDistRatio);
+
+    // //Solution
+    std::sort(distRatios.begin(), distRatios.end());
+    long medIndex = floor(distRatios.size() / 2.0);
+    double medDistRatio = distRatios.size() % 2 == 0 ? (distRatios[medIndex - 1] + distRatios[medIndex]) / 2.0 : distRatios[medIndex]; // compute median dist. ratio to remove outlier influence
+    TTC = -dT / (1 - medDistRatio);
+    // cout << "##### TTC with Camera ##### TTC : " << TTC << " s" << endl;
+    
 }
 
+pcl::PointCloud<pcl::PointXYZ>::Ptr removeOutliders(const std::vector<LidarPoint> &lidarPoints)
+{
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    for (const auto & lidarPoint : lidarPoints)
+    {
+        cloud->push_back(pcl::PointXYZ(lidarPoint.x,lidarPoint.y,0.0f));
+    }
+
+    std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> clusters;
+    
+    pcl::search::KdTree<pcl::PointXYZ>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZ>); 
+    tree->setInputCloud(cloud);
+
+    std::vector<pcl::PointIndices> cluster_indices;
+    pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
+    ec.setClusterTolerance (0.05);
+    ec.setMinClusterSize(3);
+    ec.setSearchMethod(tree);
+    ec.setInputCloud(cloud);
+    ec.extract(cluster_indices);
+
+    pcl::PointCloud<pcl::PointXYZ>::Ptr result(new pcl::PointCloud<pcl::PointXYZ>);
+    for (const auto & getIndices: cluster_indices)
+    {
+        for (int index : getIndices.indices)
+            result->points.push_back (cloud->points[index]);
+    }
+
+    return result;
+}
 
 void computeTTCLidar(std::vector<LidarPoint> &lidarPointsPrev,
                      std::vector<LidarPoint> &lidarPointsCurr, double frameRate, double &TTC)
 {
-    // ...
-}
+    pcl::PointCloud<pcl::PointXYZ>::Ptr clustered_lidarPointsPrev = removeOutliders(lidarPointsPrev);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr clustered_lidarPointsCurr = removeOutliders(lidarPointsCurr);
 
+    double minXPrev = 1e9, minXCurr = 1e9;
+
+    for (const auto & lidarPoint : clustered_lidarPointsPrev->points)
+    {
+        minXPrev = minXPrev > lidarPoint.x ? lidarPoint.x : minXPrev;
+    }
+
+    for (const auto & lidarPoint : clustered_lidarPointsCurr->points)
+    {
+        minXCurr = minXCurr > lidarPoint.x ? lidarPoint.x : minXCurr;
+    }
+    double dT = 1/ frameRate;
+    TTC = minXCurr * dT / (minXPrev - minXCurr);
+}
 
 void matchBoundingBoxes(std::vector<cv::DMatch> &matches, std::map<int, int> &bbBestMatches, DataFrame &prevFrame, DataFrame &currFrame)
 {
-    // ...
+    int best_match_table[100][100] = {0,};
+
+    for (auto match : matches)
+    {
+        cv::KeyPoint query = prevFrame.keypoints[match.queryIdx];
+        cv::KeyPoint train = currFrame.keypoints[match.trainIdx];
+        bool query_found = false, train_found = false;
+        int query_pos = 0, train_pos = 0;
+        for (int i = 0; i < prevFrame.boundingBoxes.size() ; i++)
+        {
+            if (prevFrame.boundingBoxes[i].roi.contains(cv::Point(query.pt.x,query.pt.y)) ) 
+            {
+                query_found = true;
+                query_pos = i;
+                break;
+            }
+        }
+
+        for (int j = 0; j < currFrame.boundingBoxes.size() ; j++)
+        {
+            if (currFrame.boundingBoxes[j].roi.contains(cv::Point(train.pt.x,train.pt.y)) ) 
+            {
+                train_found = true;
+                train_pos = j;
+                break;
+            }
+        }
+
+        if (query_found && train_found) 
+        {
+            best_match_table[query_pos][train_pos] += 1;
+        }
+    }
+    
+    for (int i = 0; i < prevFrame.boundingBoxes.size() ; i++)
+    {
+        int max = -1;
+        int value = -1;
+
+        for (int j = 0; j < currFrame.boundingBoxes.size(); j++)
+        {
+            if (max < best_match_table[i][j]) 
+            {
+                max = best_match_table[i][j];
+                value = j;
+            }
+        }
+        
+        bbBestMatches[i] = value;
+    }
+    
 }
